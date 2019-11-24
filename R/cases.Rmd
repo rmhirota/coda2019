@@ -1,0 +1,237 @@
+---
+title: "Uso da API da Câmara via R"
+author: "Renata Hirota | R-Ladies | Vortex Media"
+date: "Novembro de 2019"
+output: 
+  xaringan::moon_reader:
+    css: ["rladies", "rladies-fonts", "ninjutsu"]
+
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# [API da Câmara](https://dadosabertos.camara.leg.br/swagger/api.html)
+
+## Por que usar a API da Câmara?
+- Muitos dos dados já estão disponíveis em CSV
+- Ainda assim, algumas buscas e relações só são possíveis ou são mais fáceis de realizar via API
+
+--
+
+## Emendas da PEC da Reforma da Previdência
+- Interesse: Quantas emendas? Quem teve maior participação nesse processo?
+- Total de 297 emendas na Câmara e 594 no Senado
+- Resultado: [Congresso aprovou 16% das 891 emendas feitas à reforma da Previdência](https://vortex.media/dados/10519/congresso-propos-891-emendas-a-reforma-da-previdencia-apenas-16-foram-adiante/)
+
+---
+
+## Coletando os dados
+
+```{r message=FALSE}
+library(jsonlite)
+library(dplyr)
+library(stringr)
+
+# Proposições relacionadas à PEC00619
+pec <- "https://dadosabertos.camara.leg.br/api/v2/proposicoes/2192459/relacionadas"
+json <- fromJSON(pec)
+prop_pec <- json$dados
+```
+
+---
+
+Vamos dar uma olhada nos dados:
+```{r}
+glimpse(prop_pec)
+```
+--
+Nosso interesse é apenas nas proposições que são emendas: emendas na comissão, emenda aglutinativa de plenário ou emenda de redação
+```{r}
+emendas <- prop_pec %>% 
+  filter(siglaTipo == "EMC" | siglaTipo == "EMA" | siglaTipo == "ERD")
+glimpse(emendas)
+```
+
+---
+
+## Autores
+
+A tabela que obtivemos não tem a informação dos proponentes das emendas. Para isso, precisamos de novo consultar a API.
+  
+A API nos permite obter os autores de proposições por id. Vamos criar uma função que extrai essa informação da API, e aplicar para todos os ids da tabela obtida anteriormente.
+
+```{r}
+# Função que busca autores para proposições específicas
+autor <- function(id_emenda) {
+  url <- sprintf("https://dadosabertos.camara.leg.br/api/v2/proposicoes/%s/autores", id_emenda)
+  autores <- fromJSON(url)
+  autores <- data.frame(autores$dados, id_emenda)
+  return(autores)
+}
+autores <- purrr::map(emendas$id, autor) %>% bind_rows()
+```
+---
+## Autores
+
+
+```{r}
+# Autores de todas as emendas (EMC, EMA, ERD) - considera todas as assinaturas
+glimpse(autores)
+```
+
+
+
+
+---
+## Autores
+
+Agora temos **todos** os parlamentares que assinaram as emendas. Vamos ver só os **proponentes**, e aproveitar e já extrair o id de cada deputado a partir da coluna uri:
+```{r}
+# Apenas proponentes
+autores_proponentes <- autores %>% filter(proponente == 1) %>%
+  mutate(id_deputado = as.numeric(str_extract(uri, "[0-9]*$"))) 
+glimpse(autores_proponentes)
+```
+
+---
+## Partidos
+
+Já temos nome e id, mas não temos uma informação importante: **partido** <br>
+Também podemos pegar isso fácil na API. <br>
+--
+O endpoint `deputados?idLegislatura=56` nos traz informações sobre a legislatura atual.
+
+```{r}
+# Informações sobre deputados da legislatura atual (cod. 56)
+url <- "https://dadosabertos.camara.leg.br/api/v2/deputados?idLegislatura=56&ordem=ASC&ordenarPor=nome"
+deputados <- fromJSON(url)
+deputados <- deputados$dados
+glimpse(deputados)
+```
+
+
+---
+
+## Juntando as informações
+
+Temos tudo o que precisamos para a análise. Ter tudo em uma base (na maioria das vezes) facilita o trabalho.
+```{r}
+autores_proponentes <- autores_proponentes %>%
+  left_join(deputados, by = c('id_deputado' = 'id')) %>% 
+  select(-uri.y, -nome.y)
+glimpse(autores_proponentes)
+```
+
+
+---
+class: inverse, middle
+
+## Analisando os dados: <br>contagem por partido, deputado...
+
+---
+```{r fig.height = 4}
+library(ggplot2)
+# Quantidade de emendas propostas por partido
+autores_proponentes %>% group_by(siglaPartido) %>%  
+  summarise(n = n_distinct(id_emenda)) %>%
+  arrange(desc(n)) %>% head(10) %>% 
+  ggplot(aes(x=reorder(siglaPartido, n), y=n)) +
+  geom_col() + coord_flip()
+```
+
+Reparem que, nesse caso, se um partido tem 1 assinatura ou 10 assinaturas na mesma emenda, ela só conta uma vez
+
+---
+```{r fig.height = 4}
+# Quantidade de emendas propostas por partido (contando todos os parlamentares)
+autores_proponentes %>% group_by(siglaPartido) %>%
+  summarise(n = n()) %>% arrange(desc(n)) %>% head(10) %>% 
+  ggplot(aes(x=reorder(siglaPartido, n), y=n)) +
+  geom_col() + coord_flip()
+```
+
+Aqui, é o contrário: cada assinatura conta
+
+---
+
+## E o PT?
+
+No úlimo gráfico, vemos que os deputados do PT propuseram muitas emendas. Vamos ver com mais calma...
+
+```{r}
+autores_proponentes %>% filter(siglaPartido == "PT") %>% 
+  group_by(id_emenda) %>% summarise(n=n_distinct(id_deputado)) %>% 
+  arrange(desc(n))
+```
+
+Todos os deputados da bancada do PT assinaram em conjunto 9 das emendas propostas por algum parlamentar petista. Isso é o que estava causando a discrepância no gráfico anterior.
+
+---
+
+## E o PT?
+
+Vamos tirar essas emendas e ver como o gráfico fica:
+```{r fig.height=4}
+pt_emendas <- c("2205946","2205947", "2205948","2205949","2205950",
+                "2205951","2205952","2205954","2205953","2200893")
+autores_proponentes %>% filter(!id_emenda %in% pt_emendas) %>% 
+  group_by(siglaPartido) %>% summarise(n = n()) %>%
+  arrange(desc(n)) %>% head(10) %>% 
+  ggplot(aes(x=reorder(siglaPartido, n), y=n)) + geom_col() + coord_flip()
+```
+
+---
+
+## Os deputados que mais propuseram emendas
+
+Aqui, de novo, temos o mesmo problema: deputados do PT se comportam de maneira diferente dos parlamentares de outros partidos, porque todos assinaram em conjunto 9 emendas. Então cada um dos 54 deputados tem, ao menos, 9 emendas na conta.
+
+```{r eval=F}
+autores_proponentes %>%
+  group_by(id_deputado, nome.x, siglaPartido) %>%
+  summarise(n = n_distinct(id_emenda)) %>%
+  arrange(desc(n)) %>% head(60) %>%
+  ggplot(aes(x=reorder(nome.x, n), y=n, fill=siglaPartido)) +
+  geom_col() + coord_flip() + theme(axis.text=element_text(size=6))
+```
+
+---
+```{r echo=F, fig.height=8}
+autores_proponentes %>%
+  group_by(id_deputado, nome.x, siglaPartido) %>%
+  summarise(n = n_distinct(id_emenda)) %>%
+  arrange(desc(n)) %>% head(60) %>%
+  ggplot(aes(x=reorder(nome.x, n), y=n, fill=siglaPartido)) +
+  geom_col() + coord_flip() + theme(axis.text=element_text(size=6))
+```
+---
+Tirando essas emendas específicas, fica assim:
+```{r echo=F, fig.height = 8}
+autores_proponentes %>%
+  filter(!(id_emenda %in% pt_emendas)) %>%
+  group_by(id_deputado, nome.x, siglaPartido) %>%
+  summarise(n = n_distinct(id_emenda)) %>%
+  arrange(desc(n)) %>%
+  head(25) %>%
+  ggplot(aes(x=reorder(nome.x, n), y=n, fill=siglaPartido)) +
+  geom_col() +
+  geom_text(aes(label=siglaPartido), hjust=-0.25) +
+  coord_flip() +
+  theme(axis.text=element_text(size=6))
+```
+
+
+
+
+---
+
+class: inverse, middle, center
+
+# Obrigada!
+
+@renata_mh | renata@vortex.media
+

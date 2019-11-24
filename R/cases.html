@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+  <head>
+    <title>Uso da API da Câmara via R e   Análise de sentimento</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Renata Hirota | R-Ladies | Vortex Media" />
+    <link href="cases_files/remark-css-0.0.1/rladies.css" rel="stylesheet" />
+    <link href="cases_files/remark-css-0.0.1/rladies-fonts.css" rel="stylesheet" />
+    <link href="cases_files/remark-css-0.0.1/ninjutsu.css" rel="stylesheet" />
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# Uso da API da Câmara via R e <br> Análise de sentimento
+### Renata Hirota | R-Ladies | Vortex Media
+### Novembro de 2019
+
+---
+
+
+
+
+
+# [API da Câmara](https://dadosabertos.camara.leg.br/swagger/api.html)
+
+## Por que usar a API da Câmara?
+- Muitos dos dados já estão disponíveis em CSV
+- Ainda assim, algumas buscas e relações só são possíveis ou são mais fáceis de realizar via API
+
+--
+
+## Emendas da PEC da Reforma da Previdência
+- Interesse: Quantas emendas? Quem teve maior participação nesse processo?
+- Total de 297 emendas na Câmara e 594 no Senado
+- Resultado: [Congresso aprovou 16% das 891 emendas feitas à reforma da Previdência](https://vortex.media/dados/10519/congresso-propos-891-emendas-a-reforma-da-previdencia-apenas-16-foram-adiante/)
+
+---
+
+## Coletando os dados
+
+
+```r
+library(jsonlite)
+library(dplyr)
+library(stringr)
+
+# Proposições relacionadas à PEC00619
+pec &lt;- "https://dadosabertos.camara.leg.br/api/v2/proposicoes/2192459/relacionadas"
+json &lt;- fromJSON(pec)
+prop_pec &lt;- json$dados
+```
+
+---
+
+Vamos dar uma olhada nos dados:
+
+```r
+glimpse(prop_pec)
+```
+
+```
+## Observations: 559
+## Variables: 7
+## $ id        &lt;int&gt; 2198910, 2199076, 2199094, 2197412, 2210849, 2211140, …
+## $ uri       &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/proposicoes…
+## $ siglaTipo &lt;chr&gt; "CVO", "CVO", "PAR", "PRL", "CVO", "PAR", "PAR", "PRL"…
+## $ codTipo   &lt;chr&gt; "195", "195", "187", "190", "195", "187", "187", "190"…
+## $ numero    &lt;chr&gt; "1", "2", "1", "1", "4", "1", "2", "2", "1", "1", "1",…
+## $ ano       &lt;chr&gt; "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "201…
+## $ ementa    &lt;chr&gt; "Parecer com Complementação de Voto, Dep. Delegado Mar…
+```
+--
+Nosso interesse é apenas nas proposições que são emendas: emendas na comissão, emenda aglutinativa de plenário ou emenda de redação
+
+```r
+emendas &lt;- prop_pec %&gt;% 
+  filter(siglaTipo == "EMC" | siglaTipo == "EMA" | siglaTipo == "ERD")
+glimpse(emendas)
+```
+
+```
+## Observations: 297
+## Variables: 7
+## $ id        &lt;int&gt; 2199624, 2199625, 2199779, 2200218, 2200893, 2201763, …
+## $ uri       &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/proposicoes…
+## $ siglaTipo &lt;chr&gt; "EMC", "EMC", "EMC", "EMC", "EMC", "EMC", "EMC", "EMC"…
+## $ codTipo   &lt;chr&gt; "130", "130", "130", "130", "130", "130", "130", "130"…
+## $ numero    &lt;chr&gt; "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11…
+## $ ano       &lt;chr&gt; "2019", "2019", "2019", "2019", "2019", "2019", "2019"…
+## $ ementa    &lt;chr&gt; "Modifica o sistema de previdência social, estabelece …
+```
+
+---
+
+## Autores
+
+A tabela que obtivemos não tem a informação dos proponentes das emendas. Para isso, precisamos de novo consultar a API.
+  
+A API nos permite obter os autores de proposições por id. Vamos criar uma função que extrai essa informação da API, e aplicar para todos os ids da tabela obtida anteriormente.
+
+
+```r
+# Função que busca autores para proposições específicas
+autor &lt;- function(id_emenda) {
+  url &lt;- sprintf("https://dadosabertos.camara.leg.br/api/v2/proposicoes/%s/autores", id_emenda)
+  autores &lt;- fromJSON(url)
+  autores &lt;- data.frame(autores$dados, id_emenda)
+  return(autores)
+}
+autores &lt;- purrr::map(emendas$id, autor) %&gt;% bind_rows()
+```
+---
+## Autores
+
+
+
+```r
+# Autores de todas as emendas (EMC, EMA, ERD) - considera todas as assinaturas
+glimpse(autores)
+```
+
+```
+## Observations: 44,790
+## Variables: 7
+## $ uri             &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/deput…
+## $ nome            &lt;chr&gt; "Fausto Pinato", "Iracema Portella", "Fábio Henr…
+## $ codTipo         &lt;int&gt; 10000, 10000, 10000, 10000, 10000, 10000, 10000,…
+## $ tipo            &lt;chr&gt; "Deputado", "Deputado", "Deputado", "Deputado", …
+## $ ordemAssinatura &lt;int&gt; 85, 52, 137, 156, 16, 15, 68, 11, 2, 12, 25, 19,…
+## $ proponente      &lt;int&gt; 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, …
+## $ id_emenda       &lt;int&gt; 2199624, 2199624, 2199624, 2199624, 2199624, 219…
+```
+
+
+
+
+---
+## Autores
+
+Agora temos **todos** os parlamentares que assinaram as emendas. Vamos ver só os **proponentes**, e aproveitar e já extrair o id de cada deputado a partir da coluna uri:
+
+```r
+# Apenas proponentes
+autores_proponentes &lt;- autores %&gt;% filter(proponente == 1) %&gt;%
+  mutate(id_deputado = as.numeric(str_extract(uri, "[0-9]*$"))) 
+glimpse(autores_proponentes)
+```
+
+```
+## Observations: 964
+## Variables: 8
+## $ uri             &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/deput…
+## $ nome            &lt;chr&gt; "Marreca Filho", "Dr. Frederico", "Marreca Filho…
+## $ codTipo         &lt;int&gt; 10000, 10000, 10000, 10000, 10000, 10000, 10000,…
+## $ tipo            &lt;chr&gt; "Deputado", "Deputado", "Deputado", "Deputado", …
+## $ ordemAssinatura &lt;int&gt; 1, 1, 2, 1, 1, 1, 13, 3, 12, 2, 8, 7, 9, 11, 6, …
+## $ proponente      &lt;int&gt; 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, …
+## $ id_emenda       &lt;int&gt; 2199624, 2199625, 2199625, 2199779, 2200218, 220…
+## $ id_deputado     &lt;dbl&gt; 204566, 204518, 204566, 160653, 74317, 141518, 1…
+```
+
+---
+## Partidos
+
+Já temos nome e id, mas não temos uma informação importante: **partido** &lt;br&gt;
+Também podemos pegar isso fácil na API. &lt;br&gt;
+--
+O endpoint `deputados?idLegislatura=56` nos traz informações sobre a legislatura atual.
+
+
+```r
+# Informações sobre deputados da legislatura atual (cod. 56)
+url &lt;- "https://dadosabertos.camara.leg.br/api/v2/deputados?idLegislatura=56&amp;ordem=ASC&amp;ordenarPor=nome"
+deputados &lt;- fromJSON(url)
+deputados &lt;- deputados$dados
+glimpse(deputados)
+```
+
+```
+## Observations: 542
+## Variables: 9
+## $ id            &lt;int&gt; 204554, 204521, 204379, 204560, 204528, 121948, 74…
+## $ uri           &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/deputad…
+## $ nome          &lt;chr&gt; "ABÍLIO SANTANA", "ABOU ANNI", "ACÁCIO FAVACHO", "…
+## $ siglaPartido  &lt;chr&gt; "PL", "PSL", "PROS", "PSDB", "NOVO", "PP", "PSDB",…
+## $ uriPartido    &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/partido…
+## $ siglaUf       &lt;chr&gt; "BA", "SP", "AP", "BA", "SP", "GO", "MG", "BA", "R…
+## $ idLegislatura &lt;int&gt; 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56…
+## $ urlFoto       &lt;chr&gt; "https://www.camara.leg.br/internet/deputado/bande…
+## $ email         &lt;chr&gt; "dep.abiliosantana@camara.leg.br", "dep.abouanni@c…
+```
+
+
+---
+
+## Juntando as informações
+
+Temos tudo o que precisamos para a análise. Ter tudo em uma base (na maioria das vezes) facilita o trabalho.
+
+```r
+autores_proponentes &lt;- autores_proponentes %&gt;%
+  left_join(deputados, by = c('id_deputado' = 'id')) %&gt;% 
+  select(-uri.y, -nome.y)
+glimpse(autores_proponentes)
+```
+
+```
+## Observations: 964
+## Variables: 14
+## $ uri.x           &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/deput…
+## $ nome.x          &lt;chr&gt; "Marreca Filho", "Dr. Frederico", "Marreca Filho…
+## $ codTipo         &lt;int&gt; 10000, 10000, 10000, 10000, 10000, 10000, 10000,…
+## $ tipo            &lt;chr&gt; "Deputado", "Deputado", "Deputado", "Deputado", …
+## $ ordemAssinatura &lt;int&gt; 1, 1, 2, 1, 1, 1, 13, 3, 12, 2, 8, 7, 9, 11, 6, …
+## $ proponente      &lt;int&gt; 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, …
+## $ id_emenda       &lt;int&gt; 2199624, 2199625, 2199625, 2199779, 2200218, 220…
+## $ id_deputado     &lt;dbl&gt; 204566, 204518, 204566, 160653, 74317, 141518, 1…
+## $ siglaPartido    &lt;chr&gt; "PATRIOTA", "PATRIOTA", "PATRIOTA", "PODE", "PSD…
+## $ uriPartido      &lt;chr&gt; "https://dadosabertos.camara.leg.br/api/v2/parti…
+## $ siglaUf         &lt;chr&gt; "MA", "MG", "MA", "SP", "PI", "SP", "TO", "RJ", …
+## $ idLegislatura   &lt;int&gt; 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, 56, …
+## $ urlFoto         &lt;chr&gt; "https://www.camara.leg.br/internet/deputado/ban…
+## $ email           &lt;chr&gt; "dep.marrecafilho@camara.leg.br", "dep.dr.freder…
+```
+
+
+---
+class: inverse, middle
+
+## Analisando os dados: &lt;br&gt;contagem por partido, deputado...
+
+---
+
+```r
+library(ggplot2)
+# Quantidade de emendas propostas por partido
+autores_proponentes %&gt;% group_by(siglaPartido) %&gt;%  
+  summarise(n = n_distinct(id_emenda)) %&gt;%
+  arrange(desc(n)) %&gt;% head(10) %&gt;% 
+  ggplot(aes(x=reorder(siglaPartido, n), y=n)) +
+  geom_col() + coord_flip()
+```
+
+![](cases_files/figure-html/unnamed-chunk-9-1.png)&lt;!-- --&gt;
+
+Reparem que, nesse caso, se um partido tem 1 assinatura ou 10 assinaturas na mesma emenda, ela só conta uma vez
+
+---
+
+```r
+# Quantidade de emendas propostas por partido (contando todos os parlamentares)
+autores_proponentes %&gt;% group_by(siglaPartido) %&gt;%
+  summarise(n = n()) %&gt;% arrange(desc(n)) %&gt;% head(10) %&gt;% 
+  ggplot(aes(x=reorder(siglaPartido, n), y=n)) +
+  geom_col() + coord_flip()
+```
+
+![](cases_files/figure-html/unnamed-chunk-10-1.png)&lt;!-- --&gt;
+
+Aqui, é o contrário: cada assinatura conta
+
+---
+
+## E o PT?
+
+No úlimo gráfico, vemos que os deputados do PT propuseram muitas emendas. Vamos ver com mais calma...
+
+
+```r
+autores_proponentes %&gt;% filter(siglaPartido == "PT") %&gt;% 
+  group_by(id_emenda) %&gt;% summarise(n=n_distinct(id_deputado)) %&gt;% 
+  arrange(desc(n))
+```
+
+```
+## # A tibble: 29 x 2
+##    id_emenda     n
+##        &lt;int&gt; &lt;int&gt;
+##  1   2205946    54
+##  2   2205947    54
+##  3   2205948    54
+##  4   2205949    54
+##  5   2205950    54
+##  6   2205951    54
+##  7   2205952    54
+##  8   2205954    54
+##  9   2205953    53
+## 10   2205543     1
+## # … with 19 more rows
+```
+
+Todos os deputados da bancada do PT assinaram em conjunto 9 das emendas propostas por algum parlamentar petista. Isso é o que estava causando a discrepância no gráfico anterior.
+
+---
+
+## E o PT?
+
+Vamos tirar essas emendas e ver como o gráfico fica:
+
+```r
+pt_emendas &lt;- c("2205946","2205947", "2205948","2205949","2205950",
+                "2205951","2205952","2205954","2205953","2200893")
+autores_proponentes %&gt;% filter(!id_emenda %in% pt_emendas) %&gt;% 
+  group_by(siglaPartido) %&gt;% summarise(n = n()) %&gt;%
+  arrange(desc(n)) %&gt;% head(10) %&gt;% 
+  ggplot(aes(x=reorder(siglaPartido, n), y=n)) + geom_col() + coord_flip()
+```
+
+![](cases_files/figure-html/unnamed-chunk-12-1.png)&lt;!-- --&gt;
+
+---
+
+## Os deputados que mais propuseram emendas
+
+Aqui, de novo, temos o mesmo problema: deputados do PT se comportam de maneira diferente dos parlamentares de outros partidos, porque todos assinaram em conjunto 9 emendas. Então cada um dos 54 deputados tem, ao menos, 9 emendas na conta.
+
+
+```r
+autores_proponentes %&gt;%
+  group_by(id_deputado, nome.x, siglaPartido) %&gt;%
+  summarise(n = n_distinct(id_emenda)) %&gt;%
+  arrange(desc(n)) %&gt;% head(60) %&gt;%
+  ggplot(aes(x=reorder(nome.x, n), y=n, fill=siglaPartido)) +
+  geom_col() + coord_flip() + theme(axis.text=element_text(size=6))
+```
+
+---
+![](cases_files/figure-html/unnamed-chunk-14-1.png)&lt;!-- --&gt;
+---
+Tirando essas emendas específicas, fica assim:
+![](cases_files/figure-html/unnamed-chunk-15-1.png)&lt;!-- --&gt;
+
+
+
+
+---
+
+class: inverse, middle, center
+
+# Obrigada!
+
+@renata_mh | renata@vortex.media
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create();
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();</script>
+
+<script>
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
